@@ -1,41 +1,50 @@
 import sys
 import json
 import os
+import base64
 from datetime import datetime
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QLabel,
     QComboBox, QTextEdit, QPushButton, QTabWidget, QMessageBox,
-    QListWidget, QDateEdit, QHBoxLayout, QSplitter, QShortcut
+    QListWidget, QDateEdit, QHBoxLayout, QSplitter, QShortcut,
+    QScrollArea, QFrame, QSizePolicy, QToolButton
 )
-from PyQt5.QtCore import QDate, Qt
-from PyQt5.QtGui import QFont, QKeySequence, QTextCursor, QTextListFormat, QTextCharFormat
+from PyQt5.QtCore import QDate, Qt, QBuffer, QIODevice
+from PyQt5.QtGui import QFont, QKeySequence, QTextCursor, QTextListFormat, QTextCharFormat, QPixmap
 
 JSON_FILE = "dados.json"
 ARIAL_FONT = QFont("Arial", 10)
 
+
 class RegistroTab(QWidget):
     def __init__(self):
         super().__init__()
-        self.titulo_ativo = False
+        self.imagens_base64 = []
+        self.imagem_widgets = []
         self.init_ui()
 
     def init_ui(self):
-        layout = QVBoxLayout()
+        main_layout = QVBoxLayout()
 
+        # Data e Nome lado a lado
+        data_nome_layout = QHBoxLayout()
         self.data_edit = QDateEdit(calendarPopup=True)
-        self.data_edit.setDisplayFormat("dd/MM/yyyy") # Formato de exibição da data
+        self.data_edit.setDisplayFormat("dd/MM/yyyy")
         self.data_edit.setDate(QDate.currentDate())
         self.data_edit.setFont(ARIAL_FONT)
-        layout.addWidget(QLabel("Data do registro:", font=ARIAL_FONT))
-        layout.addWidget(self.data_edit)
+        data_nome_layout.addWidget(QLabel("Data do registro:", font=ARIAL_FONT))
+        data_nome_layout.addWidget(self.data_edit)
 
         self.nome_box = QComboBox()
         self.nome_box.setFont(ARIAL_FONT)
         self.nome_box.addItems(["Victor", "Clara"])
-        layout.addWidget(QLabel("Selecione o nome:", font=ARIAL_FONT))
-        layout.addWidget(self.nome_box)
+        data_nome_layout.addWidget(QLabel("Nome:", font=ARIAL_FONT))
+        data_nome_layout.addWidget(self.nome_box)
 
-        layout.addWidget(QLabel("Texto do registro:", font=ARIAL_FONT))
+        main_layout.addLayout(data_nome_layout)
+
+        # Texto e botões
+        main_layout.addWidget(QLabel("Texto do registro:", font=ARIAL_FONT))
 
         button_bar = QHBoxLayout()
         self.buttons = {}
@@ -47,38 +56,49 @@ class RegistroTab(QWidget):
             ("Marca-texto", "Ctrl+M", self.toggle_marcatexto),
             ("Título", "Ctrl+T", self.toggle_titulo),
             ("Enumeração", "Ctrl+E", self.aplicar_enum),
-            ("Tópicos", "Ctrl+L", self.aplicar_topicos)
+            ("Tópicos", "Ctrl+L", self.aplicar_topicos),
+            ("Colar Imagem (Ctrl+V)", "Ctrl+V", self.colar_imagem_area_transferencia)
         ]
 
         for label, shortcut, callback in buttons_info:
-            btn = QPushButton(f"{label} ({shortcut})")
+            btn = QPushButton(label)
             btn.setFont(ARIAL_FONT)
             btn.setFixedHeight(28)
-            btn.setCheckable(label not in ["Enumeração", "Tópicos"])
+            btn.setCheckable(label not in ["Enumeração", "Tópicos", "Colar Imagem (Ctrl+V)"])
             btn.clicked.connect(callback)
             QShortcut(QKeySequence(shortcut), self).activated.connect(callback)
             button_bar.addWidget(btn)
             self.buttons[label] = btn
 
-        layout.addLayout(button_bar)
+        main_layout.addLayout(button_bar)
 
         self.textbox = QTextEdit()
         self.textbox.setFont(ARIAL_FONT)
-        layout.addWidget(self.textbox)
+        main_layout.addWidget(self.textbox)
+
+        # Área de rolagem para miniaturas com botões de remover
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setFixedHeight(120)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_content = QWidget()
+        self.scroll_layout = QHBoxLayout(self.scroll_content)
+        self.scroll_layout.setContentsMargins(5, 5, 5, 5)
+        self.scroll_layout.setSpacing(10)
+        self.scroll_area.setWidget(self.scroll_content)
+        main_layout.addWidget(QLabel("Imagens coladas:", font=ARIAL_FONT))
+        main_layout.addWidget(self.scroll_area)
 
         self.save_button = QPushButton("Salvar Registro")
         self.save_button.setFont(ARIAL_FONT)
         self.save_button.clicked.connect(self.salvar_registro)
-        layout.addWidget(self.save_button)
+        main_layout.addWidget(self.save_button)
 
-        self.setLayout(layout)
+        self.setLayout(main_layout)
 
         self.textbox.cursorPositionChanged.connect(self.atualizar_botoes)
 
     def atualizar_botoes(self):
         fmt = self.textbox.currentCharFormat()
-        # cursor = self.textbox.textCursor() # Não utilizado diretamente aqui
-
         self.buttons["Negrito"].setChecked(fmt.fontWeight() == QFont.Bold)
         self.buttons["Itálico"].setChecked(fmt.fontItalic())
         self.buttons["Sublinhado"].setChecked(fmt.fontUnderline())
@@ -131,26 +151,23 @@ class RegistroTab(QWidget):
     def toggle_titulo(self):
         cursor = self.textbox.textCursor()
         fmt = QTextCharFormat()
-        # Ao invés de usar self.titulo_ativo, verificamos o formato atual do texto
-        # para determinar se estamos no modo título ou normal.
         current_fmt = self.textbox.currentCharFormat()
         is_current_text_title = (current_fmt.fontPointSize() >= 16 and current_fmt.fontWeight() == QFont.Bold)
 
         if is_current_text_title:
-            fmt.setFontPointSize(10) # Tamanho normal
+            fmt.setFontPointSize(10)
             fmt.setFontWeight(QFont.Normal)
         else:
-            fmt.setFontPointSize(16) # Tamanho de título
+            fmt.setFontPointSize(16)
             fmt.setFontWeight(QFont.Bold)
-            fmt.setFontUnderline(False) # Garante que não está sublinhado
-            fmt.setFontItalic(False) # Garante que não está itálico
+            fmt.setFontUnderline(False)
+            fmt.setFontItalic(False)
 
         if cursor.hasSelection():
             cursor.mergeCharFormat(fmt)
         else:
             self.textbox.setCurrentCharFormat(fmt)
         self.atualizar_botoes()
-
 
     def aplicar_enum(self):
         cursor = self.textbox.textCursor()
@@ -168,25 +185,78 @@ class RegistroTab(QWidget):
         cursor.createList(fmt)
         cursor.endEditBlock()
 
+    def colar_imagem_area_transferencia(self):
+        clipboard = QApplication.clipboard()
+        image = clipboard.image()
+        if image.isNull():
+            QMessageBox.information(self, "Imagem", "Não há imagem na área de transferência.")
+            return
+
+        buffer = QBuffer()
+        buffer.open(QIODevice.WriteOnly)
+        image.save(buffer, "PNG")
+        img_bytes = buffer.data()
+        buffer.close()
+
+        img_base64 = base64.b64encode(img_bytes).decode('utf-8')
+        self.imagens_base64.append(img_base64)
+
+        pixmap = QPixmap()
+        pixmap.loadFromData(img_bytes)
+
+        # Widget container para miniatura + botão remover
+        container = QWidget()
+        container.setFixedSize(110, 110)
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.setSpacing(2)
+
+        thumb = QLabel()
+        thumb.setPixmap(pixmap.scaled(100, 100, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        thumb.setFrameShape(QFrame.Box)
+        thumb.setLineWidth(1)
+        thumb.setFixedSize(100, 100)
+        thumb.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+
+        btn_remove = QToolButton()
+        btn_remove.setText("X")
+        btn_remove.setFixedSize(20, 20)
+        btn_remove.setToolTip("Remover imagem")
+        btn_remove.clicked.connect(lambda _, w=container, b64=img_base64: self.remover_imagem(w, b64))
+
+        container_layout.addWidget(thumb)
+        container_layout.addWidget(btn_remove, alignment=Qt.AlignCenter)
+
+        self.scroll_layout.addWidget(container)
+        self.imagem_widgets.append(container)
+
+        QMessageBox.information(self, "Imagem", "Imagem da área de transferência capturada e adicionada.")
+
+    def remover_imagem(self, widget, img_base64):
+        if img_base64 in self.imagens_base64:
+            self.imagens_base64.remove(img_base64)
+        self.scroll_layout.removeWidget(widget)
+        widget.deleteLater()
+        self.imagem_widgets.remove(widget)
+
     def salvar_registro(self):
         nome = self.nome_box.currentText()
         texto = self.textbox.toHtml().strip()
-        # Remove quebras de linha desnecessárias, mas preserva a formatação HTML
         texto = texto.replace("\n", "").replace("<br>", "")
 
-        # Formata data e hora separadamente
         data_registro = self.data_edit.date().toString("dd/MM/yyyy")
-        hora_registro = datetime.now().strftime("%H:%M") # Hora no formato HH:mm
+        hora_registro = datetime.now().strftime("%H:%M")
 
         if not texto or texto == "<br>":
             QMessageBox.warning(self, "Erro", "O campo de texto está vazio.")
             return
 
         registro = {
-            "data": data_registro, # Campo 'data'
-            "hora": hora_registro, # Campo 'hora'
+            "data": data_registro,
+            "hora": hora_registro,
             "nome": nome,
-            "texto": texto
+            "texto": texto,
+            "imagens_base64": self.imagens_base64
         }
 
         dados = []
@@ -204,7 +274,17 @@ class RegistroTab(QWidget):
 
         QMessageBox.information(self, "Salvo", "Registro salvo com sucesso!")
         self.textbox.clear()
+
+        # Limpa miniaturas e lista de imagens
+        while self.scroll_layout.count():
+            item = self.scroll_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+        self.imagens_base64.clear()
+        self.imagem_widgets.clear()
         self.atualizar_botoes()
+
 
 class VisualizarTab(QWidget):
     def __init__(self):
@@ -246,43 +326,64 @@ class VisualizarTab(QWidget):
                 self.lista.addItem("Erro ao carregar JSON.")
                 return
 
-        # Ajusta a chave de ordenação para considerar 'data' e 'hora' separadamente
-        # Tenta data + hora, senão só data, senão vazio para evitar erro em dados antigos
         def sort_key(x):
             data_str = x.get('data', '01/01/1900')
             hora_str = x.get('hora', '00:00')
             try:
-                # Tenta analisar no novo formato dd/MM/yyyy HH:mm
                 return datetime.strptime(f"{data_str} {hora_str}", "%d/%m/%Y %H:%M")
             except ValueError:
-                try:
-                    # Se falhar, tenta o formato antigo dd-MM-yyyy HH:MM:SS
-                    # (precisa ser compatível com o formato que o script de correção usaria)
-                    return datetime.strptime(f"{x.get('data', '01-01-1900')} {x.get('hora', '00:00:00')}", "%d-%m-%Y %H:%M:%S")
-                except ValueError:
-                    return datetime.min # Valor mínimo para ordenar no final em caso de erro
+                return datetime.min
 
         self.dados.sort(key=sort_key, reverse=True)
 
-
         for item in self.dados:
-            # Pega data e hora dos campos separados. Se não existirem (dados antigos),
-            # usa o campo 'data_hora' se houver, ou string vazia.
             data_display = item.get('data', '')
             hora_display = item.get('hora', '')
-            if not data_display and 'data_hora' in item: # Compatibilidade com formato anterior
-                data_display = item['data_hora'].split(' ')[0]
-                hora_display = item['data_hora'].split(' ')[1]
-
-            resumo = item["texto"].replace("\n", " ").strip()[:40]
-            linha = f"{data_display} {hora_display} - {item['nome']}: {resumo}..."
+            resumo = item.get("texto", "").replace("\n", " ").strip()[:40]
+            linha = f"{data_display} {hora_display} - {item.get('nome', '')}: {resumo}..."
             self.lista.addItem(linha)
 
     def mostrar_detalhes(self, item):
         index = self.lista.row(item)
         if 0 <= index < len(self.dados):
-            texto_html = self.dados[index].get("texto", "").replace("\n", "<br>")
-            self.texto_view.setHtml(f"<div style='font-family: Arial; font-size: 11pt; line-height: 1.4'>{texto_html}</div>")
+            registro = self.dados[index]
+            texto_html = registro.get("texto", "").replace("\n", "<br>")
+            html = f"<div style='font-family: Arial; font-size: 11pt; line-height: 1.4'>{texto_html}</div>"
+
+            imagens_base64 = registro.get("imagens_base64", [])
+            from PyQt5.QtWidgets import QLabel, QVBoxLayout, QWidget
+
+            # Remove container antigo se existir
+            if hasattr(self, 'container_widget'):
+                self.layout().removeWidget(self.container_widget)
+                self.container_widget.deleteLater()
+                del self.container_widget
+
+            if imagens_base64:
+                container = QWidget()
+                vlayout = QVBoxLayout(container)
+
+                label_texto = QTextEdit()
+                label_texto.setReadOnly(True)
+                label_texto.setFont(ARIAL_FONT)
+                label_texto.setHtml(html)
+                vlayout.addWidget(label_texto)
+
+                for img_b64 in imagens_base64:
+                    img_bytes = base64.b64decode(img_b64)
+                    pixmap = QPixmap()
+                    pixmap.loadFromData(img_bytes)
+                    label_imagem = QLabel()
+                    label_imagem.setPixmap(pixmap.scaledToWidth(400, Qt.SmoothTransformation))
+                    vlayout.addWidget(label_imagem)
+
+                self.texto_view.hide()
+                self.layout().addWidget(container)
+                self.container_widget = container
+            else:
+                self.texto_view.show()
+                self.texto_view.setHtml(html)
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -306,6 +407,7 @@ class MainWindow(QMainWindow):
     def on_tab_changed(self, index):
         if index == 1:
             self.visualizar_tab.carregar_dados()
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
